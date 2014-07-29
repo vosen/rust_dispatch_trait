@@ -249,7 +249,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         node: ItemStruct(
             box (GC) StructDef {
                 fields: vec!(),
-                ctor_id: None,
+                ctor_id: Some(ast::DUMMY_NODE_ID),
                 super_struct: None,
                 is_virtual: false
             },
