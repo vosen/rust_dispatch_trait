@@ -11,12 +11,15 @@ extern crate rustc;
 use rustc::plugin::registry::Registry;
 use std::gc::{Gc, GC};
 use std::str::StrVector;
-use syntax::ast::{Item, MetaItem, ItemTrait, Public, Inherited, Ident, Required, Provided, MetaList, MetaWord};
+use syntax::ast;
+use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod};
 use syntax::codemap::Span;
 use syntax::ext::base::{ExtCtxt, ItemModifier, ItemDecorator};
 use syntax::ext::build::AstBuilder;
+use syntax::owned_slice::OwnedSlice;
 use syntax::parse::token;
 use syntax::parse::token::InternedString;
+use syntax::ast_util::PostExpansionMethod;
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
@@ -96,9 +99,73 @@ fn validate_meta_attr<'a>(trait_name: &str,
     };
 }
 
+fn method_to_unimplemented(src: &TraitMethod, sp: Span) -> TraitMethod {
+    match src {
+        &Required(ref req_method) => Required(req_method.clone()),
+        &Provided(prov_method) => {
+            Required(
+                TypeMethod {
+                    ident: prov_method.pe_ident().clone(),
+                    attrs: prov_method.attrs.clone().clone(),
+                    fn_style: prov_method.pe_fn_style().clone(),
+                    abi: prov_method.pe_abi().clone(),
+                    decl: prov_method.pe_fn_decl().clone(),
+                    generics: prov_method.pe_generics().clone(),
+                    explicit_self: prov_method.pe_explicit_self().clone(),
+                    id: ast::DUMMY_NODE_ID,
+                    span: sp,
+                    vis: prov_method.pe_vis().clone()
+                }
+            )
+        }
+    }
+}
+
 fn expand_generate_traits(cx: &mut ExtCtxt,
-                          span: Span,
+                          sp: Span,
                           meta: Gc<MetaItem>,
                           item: Gc<Item>,
                           push: |Gc<Item>|) {
+    // Check if we were called correctly
+    let impl_struct = match validate_meta_attr("dispatch_trait__postprocess", cx, sp, &meta) {
+        Some(struct_name) => struct_name,
+        None => { return; }
+    };
+    // Unpickle methods for the passed ItemTrait
+    let trait_methods = match item.node {
+        ItemTrait(_,_,_, ref methods) => { methods },
+        _ => {
+            cx.span_err(sp, "attribute `dispatch_trait__postprocess` can be only applied to traits");
+            return;
+        }
+    };
+    // demangle the name
+    let mangled_name = item.ident.as_str();
+    // cut off "__Original"
+    let visible_name = mangled_name.slice_to(mangled_name.len() - 10);
+    // pare visibility suffix
+    let (base_name, visibility) = if visible_name.ends_with("Public") {
+        (visible_name.slice_to(visible_name.len() - 8), Public)
+    }
+    else {
+        (visible_name.slice_to(visible_name.len() - 11), Inherited)
+    };
+    // Generate #Trait#__Base
+    let base_trait = Item {
+        ident: cx.ident_of((base_name.to_string() + "__Base").as_slice()),
+        attrs: vec!(),
+        id: ast::DUMMY_NODE_ID,
+        span: sp,
+        vis: visibility,
+        node: ItemTrait(
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::empty()
+            },
+            None,
+            vec!(),
+            trait_methods.iter().map(|m| method_to_unimplemented(m, sp)).collect()
+        )
+    };
+    push(box (GC) base_trait);
 }
