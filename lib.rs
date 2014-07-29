@@ -16,6 +16,7 @@ use syntax::ast;
 use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, TraitRef, TraitTyParamBound, ItemStruct};
 use syntax::ast::{Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod,TyParam, Method, MethDecl};
 use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock, ItemImpl, StructDef};
+use syntax::ast::{Arg, Expr, PatIdent};
 use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::{ExtCtxt, ItemModifier, ItemDecorator};
 use syntax::ext::build::AstBuilder;
@@ -134,8 +135,8 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
     else {
         (visible_name.slice_to(visible_name.len() - 11), Inherited)
     };
-    // Generate #Trait#__Base
-    let base_trait_ident = cx.ident_of((base_name.to_string() + "__Base").as_slice());
+    // Generate #Trait#_Base
+    let base_trait_ident = cx.ident_of((base_name.to_string() + "_Base").as_slice());
     let base_trait = Item {
         ident: base_trait_ident,
         attrs: vec!(
@@ -155,7 +156,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         )
     };
     push(box (GC) base_trait);
-    // Generate #Trait#<T:#Trait#__Base>
+    // Generate #Trait#<T:#Trait#_Base>
     let impl_trait_ident = cx.ident_of(base_name);
     let impl_trait = Item {
         ident: impl_trait_ident,
@@ -189,7 +190,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         )
     };
     push(box (GC) impl_trait);
-    // Generare impl<B:#Trait#__Base, T:#Trait#<B>> #Trait#__Base for Extends<T>
+    // Generare impl<B:#Trait#_Base, T:#Trait#<B>> #Trait#_Base for Extends<T>
     let impl_for_extends = Item {
         ident: base_trait_ident,
         attrs: vec!(),
@@ -313,7 +314,7 @@ fn method_to_unimplemented(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Tra
         &Provided(ref prov_method) => {
             Required(
                 TypeMethod {
-                    ident: cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()).clone(),
+                    ident: cx.ident_of(("_".to_string() + prov_method.pe_ident().as_str()).as_slice()).clone(),
                     attrs: prov_method.attrs.clone().clone(),
                     fn_style: prov_method.pe_fn_style().clone(),
                     abi: prov_method.pe_abi().clone(),
@@ -387,13 +388,20 @@ fn method_to_base_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMe
                             cx.ident_of("base"),
                             vec!()
                         ),
-                        cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
-                        vec!()
+                        cx.ident_of(("_".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                        prov_method.pe_fn_decl().inputs.iter().skip(1).map(|m| { method_inputs_to_args(m, cx, sp) } ).collect()
                     )),
                     prov_method.pe_vis().clone()
                 )
             })
         }
+    }
+}
+
+fn method_inputs_to_args(arg: &Arg, cx: &ExtCtxt, sp: Span) -> Gc<Expr> {
+    match arg.pat.node {
+        PatIdent(_, ident, _) => { cx.expr_ident(sp, ident.node) }
+        _ => fail!()
     }
 }
 
@@ -407,7 +415,7 @@ fn method_to_impl_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Meth
                 id: ast::DUMMY_NODE_ID,
                 span: sp,
                 node: MethDecl(
-                    cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                    cx.ident_of(("_".to_string() + prov_method.pe_ident().as_str()).as_slice()),
                     prov_method.pe_generics().clone(),
                     prov_method.pe_abi().clone(),
                     prov_method.pe_explicit_self().clone(),
@@ -435,7 +443,7 @@ fn method_to_impl_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Meth
                                 span: sp
                             }),
                             prov_method.pe_ident(),
-                            vec!()
+                            prov_method.pe_fn_decl().inputs.iter().skip(1).map(|m| { method_inputs_to_args(m, cx, sp) } ).collect()
                         )
                     ),
                     prov_method.pe_vis().clone()
@@ -454,7 +462,7 @@ fn trait_method_to_impl_method(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) ->
                 id: ast::DUMMY_NODE_ID,
                 span: sp,
                 node: MethDecl(
-                    cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                    cx.ident_of(("_".to_string() + prov_method.pe_ident().as_str()).as_slice()),
                     prov_method.pe_generics().clone(),
                     prov_method.pe_abi().clone(),
                     prov_method.pe_explicit_self().clone(),
