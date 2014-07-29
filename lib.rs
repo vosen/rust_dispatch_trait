@@ -15,7 +15,7 @@ use syntax::abi::Rust;
 use syntax::ast;
 use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, TraitRef, TraitTyParamBound};
 use syntax::ast::{Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod,TyParam, Method, MethDecl};
-use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock};
+use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock, ItemImpl};
 use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::{ExtCtxt, ItemModifier, ItemDecorator};
 use syntax::ext::build::AstBuilder;
@@ -189,6 +189,57 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         )
     };
     push(box (GC) impl_trait);
+    // Generare impl<B:#Trait#__Base, T:#Trait#<B>> #Trait#__Base for Extends<T>
+    let impl_for_extends = Item {
+        ident: base_trait_ident,
+        attrs: vec!(),
+        id: ast::DUMMY_NODE_ID,
+        vis: Inherited,
+        span: sp,
+        node: ItemImpl(
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::from_vec(vec!( 
+                    TyParam {
+                        ident: cx.ident_of("B"),
+                        id: ast::DUMMY_NODE_ID,
+                        bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
+                            TraitRef {
+                                path: cx.path_ident(sp, base_trait_ident),
+                                ref_id: ast::DUMMY_NODE_ID
+                            }
+                        ))),
+                        unbound: None,
+                        default: None,
+                        span: sp
+                    },
+                    TyParam {
+                        ident: cx.ident_of("T"),
+                        id: ast::DUMMY_NODE_ID,
+                        bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
+                            cx.trait_ref(
+                                cx.path_all(
+                                    sp,
+                                    false,
+                                    vec!(impl_trait_ident),
+                                    vec!(),
+                                    vec!(cx.ty_ident(sp, cx.ident_of("B")))
+                                )
+                            )
+                        ))),
+                        unbound: None,
+                        default: None,
+                        span: sp
+                    }
+                ))
+            },
+            Some(cx.trait_ref(cx.path_ident(sp, base_trait_ident))),
+            cx.ty_path(cx.path_all(sp, false, vec!(cx.ident_of("Extends")), vec!(), vec!(cx.ty_ident(sp, cx.ident_of("T")))), None),
+            trait_methods.iter().map(|m| method_to_impl_call(m, cx, sp)).collect()
+        )
+    };
+    push(box (GC) impl_for_extends);
+
 }
 
 fn method_to_unimplemented(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
@@ -257,16 +308,74 @@ fn method_to_base_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMe
                 id: ast::DUMMY_NODE_ID,
                 span: sp,
                 node: MethDecl(
-                    prov_method.pe_ident().clone(),
+                    prov_method.pe_ident(),
                     prov_method.pe_generics().clone(),
                     prov_method.pe_abi().clone(),
                     prov_method.pe_explicit_self().clone(),
                     prov_method.pe_fn_style().clone(),
                     prov_method.pe_fn_decl().clone(),
-                    cx.block_expr(cx.expr_method_call(sp, cx.expr_method_call(sp, cx.expr_self(sp), cx.ident_of("base"), vec!()), cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()), vec!())),
+                    cx.block_expr(cx.expr_method_call(
+                        sp,
+                        cx.expr_method_call(
+                            sp,
+                            cx.expr_self(sp),
+                            cx.ident_of("base"),
+                            vec!()
+                        ),
+                        cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                        vec!()
+                    )),
                     prov_method.pe_vis().clone()
                 )
             })
+        }
+    }
+}
+
+
+fn method_to_impl_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Method> {
+    match src {        
+        &Required(_) => fail!(),
+        &Provided(ref prov_method) => {
+            box (GC) Method {
+                attrs: prov_method.attrs.clone().clone(),
+                id: ast::DUMMY_NODE_ID,
+                span: sp,
+                node: MethDecl(
+                    cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                    prov_method.pe_generics().clone(),
+                    prov_method.pe_abi().clone(),
+                    prov_method.pe_explicit_self().clone(),
+                    prov_method.pe_fn_style().clone(),
+                    prov_method.pe_fn_decl().clone(),
+                    cx.block_expr(
+                        cx.expr_method_call(
+                            sp,
+                            cx.expr_block(box (GC) Block {
+                                view_items: vec!(),
+                                stmts: vec!(),
+                                expr: Some(cx.expr_call(
+                                    sp,
+                                    cx.expr_path(cx.path_all(
+                                        sp,
+                                        true,
+                                        vec!(cx.ident_of("std"), cx.ident_of("mem"), cx.ident_of("zeroed")),
+                                        vec!(),
+                                        vec!(cx.ty_ident(sp, cx.ident_of("T")))
+                                    )),
+                                    vec!()
+                                )),
+                                id: ast::DUMMY_NODE_ID,
+                                rules: UnsafeBlock(CompilerGenerated),
+                                span: sp
+                            }),
+                            prov_method.pe_ident(),
+                            vec!()
+                        )
+                    ),
+                    prov_method.pe_vis().clone()
+                )
+            }
         }
     }
 }
