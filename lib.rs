@@ -11,9 +11,12 @@ extern crate rustc;
 use rustc::plugin::registry::Registry;
 use std::gc::{Gc, GC};
 use std::str::StrVector;
+use syntax::abi::Rust;
 use syntax::ast;
-use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod};
-use syntax::codemap::Span;
+use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, TraitRef, TraitTyParamBound};
+use syntax::ast::{Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod,TyParam, Method, MethDecl};
+use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock};
+use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::{ExtCtxt, ItemModifier, ItemDecorator};
 use syntax::ext::build::AstBuilder;
 use syntax::owned_slice::OwnedSlice;
@@ -61,6 +64,9 @@ fn expand_normalize_trait(cx: &mut ExtCtxt,
             item.ident = Ident::new(token::intern(vec!(item.ident.as_str(), "__", vis, "__Original" ).concat().as_slice()));
             // Push the dispatch_trait__postprocess trait on the item
             item.attrs.push(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("dispatch_trait__postprocess"), vec!(cx.meta_word(sp, impl_struct.clone())))));
+            // Hide trait from the docs
+            item.attrs.push(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("doc"), vec!(cx.meta_word(sp, InternedString::new("hidden"))))));
+            item.attrs.push(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("non_camel_case_types"))))));
             return box(GC) item;
         },
         _ => {
@@ -99,28 +105,6 @@ fn validate_meta_attr<'a>(trait_name: &str,
     };
 }
 
-fn method_to_unimplemented(src: &TraitMethod, sp: Span) -> TraitMethod {
-    match src {
-        &Required(ref req_method) => Required(req_method.clone()),
-        &Provided(prov_method) => {
-            Required(
-                TypeMethod {
-                    ident: prov_method.pe_ident().clone(),
-                    attrs: prov_method.attrs.clone().clone(),
-                    fn_style: prov_method.pe_fn_style().clone(),
-                    abi: prov_method.pe_abi().clone(),
-                    decl: prov_method.pe_fn_decl().clone(),
-                    generics: prov_method.pe_generics().clone(),
-                    explicit_self: prov_method.pe_explicit_self().clone(),
-                    id: ast::DUMMY_NODE_ID,
-                    span: sp,
-                    vis: prov_method.pe_vis().clone()
-                }
-            )
-        }
-    }
-}
-
 fn expand_generate_traits(cx: &mut ExtCtxt,
                           sp: Span,
                           meta: Gc<MetaItem>,
@@ -151,12 +135,15 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         (visible_name.slice_to(visible_name.len() - 11), Inherited)
     };
     // Generate #Trait#__Base
+    let base_trait_ident = cx.ident_of((base_name.to_string() + "__Base").as_slice());
     let base_trait = Item {
-        ident: cx.ident_of((base_name.to_string() + "__Base").as_slice()),
-        attrs: vec!(),
+        ident: base_trait_ident,
+        attrs: vec!(
+            cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("doc"), vec!(cx.meta_word(sp, InternedString::new("hidden"))))),
+            cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("non_camel_case_types")))))),
         id: ast::DUMMY_NODE_ID,
+        vis: Inherited,
         span: sp,
-        vis: visibility,
         node: ItemTrait(
             Generics {
                 lifetimes: vec!(),
@@ -164,8 +151,122 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
             },
             None,
             vec!(),
-            trait_methods.iter().map(|m| method_to_unimplemented(m, sp)).collect()
+            trait_methods.iter().map(|m| method_to_unimplemented(m, cx, sp)).collect()
         )
     };
     push(box (GC) base_trait);
+    // Generate #Trait#<T:#Trait#__Base>
+    let impl_trait_ident = cx.ident_of(base_name);
+    let impl_trait = Item {
+        ident: impl_trait_ident,
+        attrs: vec!(), // just calling item.attrs.clone() leads to a crash and I can't 
+                       // imagine why would you want other attrs on this trait
+        id: ast::DUMMY_NODE_ID,
+        vis: visibility,
+        span: sp,
+        node: ItemTrait(
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::from_vec(vec!( 
+                    TyParam {
+                        ident: cx.ident_of("T"),
+                        id: ast::DUMMY_NODE_ID,
+                        bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
+                            TraitRef {
+                                path: cx.path_ident(sp, base_trait_ident),
+                                ref_id: ast::DUMMY_NODE_ID
+                            }
+                        ))),
+                        unbound: None,
+                        default: None,
+                        span: sp
+                    }
+                ))
+            },
+            None,
+            vec!(),
+            trait_methods.iter().map(|m| method_to_base_call(m, cx, sp)).collect::<Vec<_>>().append_one(base_method(cx, sp))
+        )
+    };
+    push(box (GC) impl_trait);
+}
+
+fn method_to_unimplemented(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
+    match src {
+        &Required(_) => fail!(),
+        &Provided(ref prov_method) => {
+            Required(
+                TypeMethod {
+                    ident: cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()).clone(),
+                    attrs: prov_method.attrs.clone().clone(),
+                    fn_style: prov_method.pe_fn_style().clone(),
+                    abi: prov_method.pe_abi().clone(),
+                    decl: prov_method.pe_fn_decl().clone(),
+                    generics: prov_method.pe_generics().clone(),
+                    explicit_self: prov_method.pe_explicit_self().clone(),
+                    id: ast::DUMMY_NODE_ID,
+                    span: sp,
+                    vis: prov_method.pe_vis().clone()
+                }
+            )
+        }
+    }
+}
+
+fn base_method(cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
+    Provided(box (GC) Method {
+        attrs: vec!(),
+        id: ast::DUMMY_NODE_ID,
+        span: sp,
+        node: MethDecl(
+            cx.ident_of("base"),
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::empty()
+            },
+            Rust,
+            Spanned {
+                node: SelfRegion(None, MutImmutable, cx.ident_of("self")),
+                span: sp
+            },
+            NormalFn,
+            cx.fn_decl (
+                vec!(cx.arg(sp, cx.ident_of("self"), cx.ty_infer(sp))),
+                cx.ty_ident(sp, cx.ident_of("T"))
+            ),
+            cx.block_expr(cx.expr_block(box (GC) Block {
+                view_items: vec!(),
+                stmts: vec!(),
+                expr: Some(cx.expr_call_global(sp, vec!(cx.ident_of("std"), cx.ident_of("mem"), cx.ident_of("zeroed")), vec!())),
+                id: ast::DUMMY_NODE_ID,
+                rules: UnsafeBlock(CompilerGenerated),
+                span: sp
+            })),
+            Inherited
+        )
+
+    })
+}
+
+fn method_to_base_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
+    match src {        
+        &Required(_) => fail!(),
+        &Provided(ref prov_method) => {
+            Provided(box (GC) Method {
+                attrs: prov_method.attrs.clone().clone(),
+                id: ast::DUMMY_NODE_ID,
+                span: sp,
+                node: MethDecl(
+                    prov_method.pe_ident().clone(),
+                    prov_method.pe_generics().clone(),
+                    prov_method.pe_abi().clone(),
+                    prov_method.pe_explicit_self().clone(),
+                    prov_method.pe_fn_style().clone(),
+                    prov_method.pe_fn_decl().clone(),
+                    cx.block_expr(cx.expr_method_call(sp, cx.expr_method_call(sp, cx.expr_self(sp), cx.ident_of("base"), vec!()), cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()), vec!())),
+                    prov_method.pe_vis().clone()
+                )
+            })
+        }
+    }
 }
