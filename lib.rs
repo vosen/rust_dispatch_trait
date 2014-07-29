@@ -13,9 +13,9 @@ use std::gc::{Gc, GC};
 use std::str::StrVector;
 use syntax::abi::Rust;
 use syntax::ast;
-use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, TraitRef, TraitTyParamBound};
+use syntax::ast::{Generics, Item, MetaItem, ItemTrait, Public, Inherited, TraitRef, TraitTyParamBound, ItemStruct};
 use syntax::ast::{Ident, Required, Provided, MetaList, MetaWord, TraitMethod, TypeMethod,TyParam, Method, MethDecl};
-use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock, ItemImpl};
+use syntax::ast::{SelfRegion, NormalFn, MutImmutable, Block, CompilerGenerated, UnsafeBlock, ItemImpl, StructDef};
 use syntax::codemap::{Span, Spanned};
 use syntax::ext::base::{ExtCtxt, ItemModifier, ItemDecorator};
 use syntax::ext::build::AstBuilder;
@@ -239,6 +239,71 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         )
     };
     push(box (GC) impl_for_extends);
+    // generate impl struct
+    let dispatch_struct = Item {
+        ident: cx.ident_of(impl_struct.get()),
+        attrs: vec!(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("dead_code")))))),
+        id: ast::DUMMY_NODE_ID,
+        vis: Inherited,
+        span: sp,
+        node: ItemStruct(
+            box (GC) StructDef {
+                fields: vec!(),
+                ctor_id: None,
+                super_struct: None,
+                is_virtual: false
+            },
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::empty()
+            }
+        )
+    };
+    push(box (GC) dispatch_struct);
+    // Copy #Trait#__#Visibility#__Original to the struct impl
+    let impl_with_code = Item {
+        ident: base_trait_ident,
+        attrs: vec!(),
+        id: ast::DUMMY_NODE_ID,
+        vis: Inherited,
+        span: sp,
+        node: ItemImpl(
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::empty()
+            },
+            Some(cx.trait_ref(cx.path_ident(sp, base_trait_ident))),
+            cx.ty_ident(sp, cx.ident_of(impl_struct.get())),
+            trait_methods.iter().map(|m| { trait_method_to_impl_method(m, cx, sp) }).collect()
+        )
+    };
+    push(box (GC) impl_with_code);
+    // generate default impl of #Trait#__#Visibility#__Original for the struct
+    let impl_with_code = Item {
+        ident: cx.ident_of(impl_struct.get()),
+        attrs: vec!(),
+        id: ast::DUMMY_NODE_ID,
+        vis: Inherited,
+        span: sp,
+        node: ItemImpl(
+            Generics {
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::empty()
+            },
+            Some(cx.trait_ref(
+                cx.path_all(
+                    sp,
+                    false,
+                    vec!(impl_trait_ident),
+                    vec!(),
+                    vec!(cx.ty_ident(sp, cx.ident_of(impl_struct.get())))
+                )
+            )),
+            cx.ty_ident(sp, cx.ident_of(impl_struct.get())),
+            vec!()
+        )
+    };
+    push(box (GC) impl_with_code);
 
 }
 
@@ -373,6 +438,29 @@ fn method_to_impl_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Meth
                             vec!()
                         )
                     ),
+                    prov_method.pe_vis().clone()
+                )
+            }
+        }
+    }
+}
+
+fn trait_method_to_impl_method(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Method> {
+    match src {
+        &Required(_) => fail!(),
+        &Provided(ref prov_method) => {
+            box (GC) Method {
+                attrs: prov_method.attrs.clone().clone(),
+                id: ast::DUMMY_NODE_ID,
+                span: sp,
+                node: MethDecl(
+                    cx.ident_of(("__".to_string() + prov_method.pe_ident().as_str()).as_slice()),
+                    prov_method.pe_generics().clone(),
+                    prov_method.pe_abi().clone(),
+                    prov_method.pe_explicit_self().clone(),
+                    prov_method.pe_fn_style().clone(),
+                    prov_method.pe_fn_decl().clone(),
+                    prov_method.pe_body().clone(),
                     prov_method.pe_vis().clone()
                 )
             }
