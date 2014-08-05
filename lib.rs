@@ -135,6 +135,41 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
     else {
         (visible_name.slice_to(visible_name.len() - 11), Inherited)
     };
+    // Load generics from otriginal defintion
+    let generics_original = match item.node {
+        ItemTrait(ref generics, _, _, _) => generics,
+        _ => fail!()
+    };
+    // generate empty Extends<T> struct
+    let extends_struct = Item {
+        ident: cx.ident_of("Extends"),
+        attrs: vec!(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("dead_code")))))),
+        id: ast::DUMMY_NODE_ID,
+        vis: visibility,
+        span: sp,
+        node: ItemStruct(
+            box (GC) StructDef {
+                fields: vec!(),
+                ctor_id: Some(ast::DUMMY_NODE_ID),
+                super_struct: None,
+                is_virtual: false
+            },
+            Generics {                
+                lifetimes: vec!(),
+                ty_params: OwnedSlice::from_vec(vec!(
+                    TyParam {
+                        ident: cx.ident_of("T"),
+                        id: ast::DUMMY_NODE_ID,
+                        bounds: OwnedSlice::empty(),
+                        unbound: None,
+                        default: None,
+                        span: sp
+                    }
+                ))
+            }
+        )
+    };
+    push(box (GC) extends_struct);
     // Generate #Trait#_Base
     let base_trait_ident = cx.ident_of((base_name.to_string() + "_Base").as_slice());
     let base_trait = Item {
@@ -143,13 +178,10 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
             cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("doc"), vec!(cx.meta_word(sp, InternedString::new("hidden"))))),
             cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("non_camel_case_types")))))),
         id: ast::DUMMY_NODE_ID,
-        vis: Inherited,
+        vis: visibility,
         span: sp,
         node: ItemTrait(
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::empty()
-            },
+            generics_original.clone(),
             None,
             vec!(),
             trait_methods.iter().map(|m| method_to_unimplemented(m, cx, sp)).collect()
@@ -166,23 +198,21 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         vis: visibility,
         span: sp,
         node: ItemTrait(
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::from_vec(vec!( 
+            {
+                let mut generics = generics_original.clone();
+                generics.ty_params = OwnedSlice::from_vec(generics.ty_params.iter().map(|x| x.clone()).chain(vec!( 
                     TyParam {
-                        ident: cx.ident_of("T"),
+                        ident: cx.ident_of("__T"),
                         id: ast::DUMMY_NODE_ID,
                         bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
-                            TraitRef {
-                                path: cx.path_ident(sp, base_trait_ident),
-                                ref_id: ast::DUMMY_NODE_ID
-                            }
+                            base_trait_ref(generics_original, base_trait_ident, cx, sp)
                         ))),
                         unbound: None,
                         default: None,
                         span: sp
                     }
-                ))
+                ).move_iter()).collect::<Vec<_>>());
+                generics
             },
             None,
             vec!(),
@@ -197,25 +227,22 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         id: ast::DUMMY_NODE_ID,
         vis: Inherited,
         span: sp,
-        node: ItemImpl(
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::from_vec(vec!( 
+        node: ItemImpl(            
+            {
+                let mut generics = generics_original.clone();
+                generics.ty_params = OwnedSlice::from_vec(generics.ty_params.iter().map(|x| x.clone()).chain(vec!( 
                     TyParam {
-                        ident: cx.ident_of("B"),
+                        ident: cx.ident_of("__B"),
                         id: ast::DUMMY_NODE_ID,
                         bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
-                            TraitRef {
-                                path: cx.path_ident(sp, base_trait_ident),
-                                ref_id: ast::DUMMY_NODE_ID
-                            }
+                            base_trait_ref(generics_original, base_trait_ident, cx, sp)
                         ))),
                         unbound: None,
                         default: None,
                         span: sp
                     },
                     TyParam {
-                        ident: cx.ident_of("T"),
+                        ident: cx.ident_of("__T"),
                         id: ast::DUMMY_NODE_ID,
                         bounds: OwnedSlice::from_vec(vec!(TraitTyParamBound(
                             cx.trait_ref(
@@ -223,8 +250,8 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                                     sp,
                                     false,
                                     vec!(impl_trait_ident),
-                                    vec!(),
-                                    vec!(cx.ty_ident(sp, cx.ident_of("B")))
+                                    generics_original.lifetimes.clone(),
+                                    generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).chain(vec!(cx.ty_ident(sp, cx.ident_of("__B"))).move_iter()).collect()
                                 )
                             )
                         ))),
@@ -232,20 +259,21 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                         default: None,
                         span: sp
                     }
-                ))
+                ).move_iter()).collect::<Vec<_>>());
+                generics
             },
-            Some(cx.trait_ref(cx.path_ident(sp, base_trait_ident))),
-            cx.ty_path(cx.path_all(sp, false, vec!(cx.ident_of("Extends")), vec!(), vec!(cx.ty_ident(sp, cx.ident_of("T")))), None),
+            Some(base_trait_ref(generics_original, base_trait_ident, cx, sp)),
+            cx.ty_path(cx.path_all(sp, false, vec!(cx.ident_of("Extends")), vec!(), vec!(cx.ty_ident(sp, cx.ident_of("__T")))), None),
             trait_methods.iter().map(|m| method_to_impl_call(m, cx, sp)).collect()
         )
     };
     push(box (GC) impl_for_extends);
-    // generate impl struct
+    // generate base struct
     let dispatch_struct = Item {
         ident: cx.ident_of(impl_struct.get()),
         attrs: vec!(cx.attribute(sp, cx.meta_list(sp, token::intern_and_get_ident("allow"), vec!(cx.meta_word(sp, InternedString::new("dead_code")))))),
         id: ast::DUMMY_NODE_ID,
-        vis: Inherited,
+        vis: visibility,
         span: sp,
         node: ItemStruct(
             box (GC) StructDef {
@@ -254,14 +282,11 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                 super_struct: None,
                 is_virtual: false
             },
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::empty()
-            }
+            generics_original.clone()
         )
     };
     push(box (GC) dispatch_struct);
-    // Copy #Trait#__#Visibility#__Original to the struct impl
+    // Copy #Trait#__#Visibility#__Original to the impl of #Trait#_Base for the base struct
     let impl_with_code = Item {
         ident: base_trait_ident,
         attrs: vec!(),
@@ -269,43 +294,68 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         vis: Inherited,
         span: sp,
         node: ItemImpl(
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::empty()
-            },
-            Some(cx.trait_ref(cx.path_ident(sp, base_trait_ident))),
-            cx.ty_ident(sp, cx.ident_of(impl_struct.get())),
+            generics_original.clone(),
+            Some(base_trait_ref(generics_original, base_trait_ident, cx, sp)),
+            cx.ty_path(cx.path_all(
+                sp,
+                false, 
+                vec!(cx.ident_of(impl_struct.get())),
+                generics_original.lifetimes.clone(),
+                generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).collect()
+            ), None),
             trait_methods.iter().map(|m| { trait_method_to_impl_method(m, cx, sp) }).collect()
         )
     };
     push(box (GC) impl_with_code);
-    // generate default impl of #Trait#__#Visibility#__Original for the struct
+    // generate empty impl of #Trait# for the struct
     let impl_with_code = Item {
-        ident: cx.ident_of(impl_struct.get()),
+        ident: impl_trait_ident,
         attrs: vec!(),
         id: ast::DUMMY_NODE_ID,
         vis: Inherited,
         span: sp,
         node: ItemImpl(
-            Generics {
-                lifetimes: vec!(),
-                ty_params: OwnedSlice::empty()
-            },
+            generics_original.clone(),
             Some(cx.trait_ref(
                 cx.path_all(
                     sp,
                     false,
                     vec!(impl_trait_ident),
-                    vec!(),
-                    vec!(cx.ty_ident(sp, cx.ident_of(impl_struct.get())))
+                    generics_original.lifetimes.clone(),
+                    generics_original.ty_params.iter().map(|par| cx.ty_ident(sp,par.ident)).chain(vec!(
+                        cx.ty_path(cx.path_all(
+                            sp,
+                            false,
+                            vec!(cx.ident_of(impl_struct.get())),                            
+                            generics_original.lifetimes.clone(),
+                            generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).collect()
+                        ), None)
+                    ).move_iter()).collect()
                 )
             )),
-            cx.ty_ident(sp, cx.ident_of(impl_struct.get())),
+            cx.ty_path(cx.path_all(
+                sp,
+                false, 
+                vec!(cx.ident_of(impl_struct.get())),
+                generics_original.lifetimes.clone(),
+                generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).collect()
+            ), None),
             vec!()
         )
     };
     push(box (GC) impl_with_code);
+}
 
+fn base_trait_ref(generics_original: &Generics, base_trait_ident: Ident, cx: &mut ExtCtxt, sp: Span) -> TraitRef {
+    cx.trait_ref(
+        cx.path_all(
+            sp,
+            false,
+            vec!(base_trait_ident),
+            generics_original.lifetimes.clone(),
+            generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).collect()
+        )
+    )
 }
 
 fn method_to_unimplemented(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
@@ -349,7 +399,7 @@ fn base_method(cx: &mut ExtCtxt, sp: Span) -> TraitMethod {
             NormalFn,
             cx.fn_decl (
                 vec!(cx.arg(sp, cx.ident_of("self"), cx.ty_infer(sp))),
-                cx.ty_ident(sp, cx.ident_of("T"))
+                cx.ty_ident(sp, cx.ident_of("__T"))
             ),
             cx.block_expr(cx.expr_block(box (GC) Block {
                 view_items: vec!(),
@@ -434,7 +484,7 @@ fn method_to_impl_call(src: &TraitMethod, cx: &mut ExtCtxt, sp: Span) -> Gc<Meth
                                         true,
                                         vec!(cx.ident_of("std"), cx.ident_of("mem"), cx.ident_of("zeroed")),
                                         vec!(),
-                                        vec!(cx.ty_ident(sp, cx.ident_of("T")))
+                                        vec!(cx.ty_ident(sp, cx.ident_of("__T")))
                                     )),
                                     vec!()
                                 )),
