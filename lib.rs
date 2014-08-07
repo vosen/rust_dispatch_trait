@@ -200,7 +200,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         node: ItemTrait(
             {
                 let mut generics = generics_original.clone();
-                generics.ty_params = OwnedSlice::from_vec(generics.ty_params.iter().map(|x| x.clone()).chain(vec!( 
+                generics.ty_params = OwnedSlice::from_vec(vec!( 
                     TyParam {
                         ident: cx.ident_of("__T"),
                         id: ast::DUMMY_NODE_ID,
@@ -211,7 +211,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                         default: None,
                         span: sp
                     }
-                ).move_iter()).collect::<Vec<_>>());
+                ).move_iter().chain(generics.ty_params.iter().map(|x| x.clone())).collect::<Vec<_>>());
                 generics
             },
             None,
@@ -230,7 +230,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         node: ItemImpl(            
             {
                 let mut generics = generics_original.clone();
-                generics.ty_params = OwnedSlice::from_vec(generics.ty_params.iter().map(|x| x.clone()).chain(vec!( 
+                generics.ty_params = OwnedSlice::from_vec(vec!( 
                     TyParam {
                         ident: cx.ident_of("__B"),
                         id: ast::DUMMY_NODE_ID,
@@ -251,7 +251,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                                     false,
                                     vec!(impl_trait_ident),
                                     generics_original.lifetimes.clone(),
-                                    generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).chain(vec!(cx.ty_ident(sp, cx.ident_of("__B"))).move_iter()).collect()
+                                    vec!(cx.ty_ident(sp, cx.ident_of("__B"))).move_iter().chain(generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident))).collect()
                                 )
                             )
                         ))),
@@ -259,7 +259,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                         default: None,
                         span: sp
                     }
-                ).move_iter()).collect::<Vec<_>>());
+                ).move_iter().chain(generics.ty_params.iter().map(|x| x.clone())).collect::<Vec<_>>());
                 generics
             },
             Some(base_trait_ref(generics_original, base_trait_ident, cx, sp)),
@@ -326,7 +326,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                     false,
                     vec!(impl_trait_ident),
                     generics_original.lifetimes.clone(),
-                    generics_original.ty_params.iter().map(|par| cx.ty_ident(sp,par.ident)).chain(vec!(
+                    vec!(
                         cx.ty_path(cx.path_all(
                             sp,
                             false,
@@ -334,7 +334,7 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                             generics_original.lifetimes.clone(),
                             generics_original.ty_params.iter().map(|par| cx.ty_ident(sp, par.ident)).collect()
                         ), None)
-                    ).move_iter()).collect()
+                    ).move_iter().chain(generics_original.ty_params.iter().map(|par| cx.ty_ident(sp,par.ident))).collect()
                 )
             )),
             cx.ty_path(cx.path_all(
