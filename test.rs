@@ -16,28 +16,28 @@ mod m2 {
     use super::Owner;
 
     #[dispatch_trait(DefaultFnTable)]
-    pub trait FnTable<D> {
+    pub trait FnTable<D:'static> {
         fn incr<M>(&self, src: &Owner<D, M>, x: uint) -> uint { x + 1 }
         fn decr<M>(&self, src: &Owner<D, M>, x: uint) -> uint { x - 1 }
     }
 }
 
 struct OverrideFnTable<D>;
-impl<D> FnTable<D, Extends<DefaultFnTable<D>>> for OverrideFnTable<D> {
+impl<D:'static> FnTable<D, Extends<DefaultFnTable<D>>> for OverrideFnTable<D> {
     fn incr<M>(&self, src: &Owner<D, M>, x: uint) -> uint {
         self.decr(src, self.base()._incr(src, x))
     }
 }
 
 pub struct OverrideFnTable2<D>;
-impl<D> FnTable<D, Extends<OverrideFnTable<D>>> for OverrideFnTable2<D> {
+impl<D:'static> FnTable<D, Extends<OverrideFnTable<D>>> for OverrideFnTable2<D> {
     fn incr<M>(&self, src: &Owner<D, M>, x: uint) -> uint {
         self.base()._incr(src, x) + 1
     }
 }
 
 pub struct OverrideFnTable3<D>;
-impl<D> FnTable<D, Extends<OverrideFnTable<D>>> for OverrideFnTable3<D> {
+impl<D:'static> FnTable<D, Extends<OverrideFnTable<D>>> for OverrideFnTable3<D> {
     fn decr<M>(&self, src: &Owner<D, M>, x: uint) -> uint {
         self.base()._decr(src, x) - 1
     }
@@ -49,7 +49,7 @@ struct Owner<D, M> {
     meth: M
 }
 
-impl<D, __:FnTable_Base<D>, M:FnTable<D, __>> Owner<D, M> {
+impl<D:'static, __:FnTable_Base<D>, M:FnTable<D, __>> Owner<D, M> {
     fn incr(&self, x: uint) -> uint {
         self.meth.incr(self, x)
     }

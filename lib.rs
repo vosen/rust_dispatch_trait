@@ -282,7 +282,11 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
                 super_struct: None,
                 is_virtual: false
             },
-            generics_original.clone()
+            {
+                let mut new_gen = generics_original.clone();
+                strip_trait_bounds(&mut new_gen);
+                new_gen
+            }
         )
     };
     push(box (GC) dispatch_struct);
@@ -344,6 +348,15 @@ fn expand_generate_traits(cx: &mut ExtCtxt,
         )
     };
     push(box (GC) impl_with_code);
+}
+
+fn strip_trait_bounds(gen: &mut Generics) {
+    let new_params = gen.ty_params.iter().map(|p| {
+        let mut new_p = p.clone();
+        new_p.bounds = OwnedSlice::empty();
+        new_p
+    }).collect();
+    gen.ty_params = OwnedSlice::from_vec(new_params);
 }
 
 fn base_trait_ref(generics_original: &Generics, base_trait_ident: Ident, cx: &mut ExtCtxt, sp: Span) -> TraitRef {
